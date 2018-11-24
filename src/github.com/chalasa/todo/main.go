@@ -1,46 +1,56 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware" //
 
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
+	"github.com/spf13/viper"
 )
 
-// func main() {
-// 	// fmt.Println(name.Name)
-// 	// name.Show()
-// }
-
-// func hello(w http.ResponseWriter, r *http.Request) {
-// 	io.WriteString(w, "Hello world!")
-// }
-
 func main() {
-	// // localhost:8000/bar
-	// http.HandleFunc("/bar", hello)
-	// http.ListenAndServe(":8000", nil)
 
 	// Echo instance
 	e := echo.New()
 
+	// YML
+	// mongo:
+	//   host:
+
+	// MONGO_HOST
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	mogoHost := viper.GetString("mongo.host")
+	mogoUser := viper.GetString("mongo.user")
+	mogoPass := viper.GetString("mongo.pass")
+	port := ":" + viper.GetString("mongo.port")
+
+	connectStr := fmt.Sprintf("%v:%v@%v", mogoUser, mogoPass, mogoHost)
+	session, err := mgo.Dial(connectStr)
+	if err != nil {
+		e.Logger.Fatal(err)
+		return
+	}
+
+	h := &handler{
+		m: session,
+	}
 	// Middleware
 	e.Use(middleware.Logger())
-	// e.Use(middleware.Recover())
-
-	// Route => handler
-	// e.GET("/", func(c echo.Context) error {
-	// 	return c.String(http.StatusOK, "Hello, World!")
-	// })
-
 	// Create TODO -> func create()
-	e.POST("/todos", create)
+	e.POST("/todos", h.create)
+	e.GET("/todos", h.list)
+	e.GET("/todos/:id", h.view)
+	e.PUT("/todos/:id", h.update)
+	e.DELETE("/todos/:id", h.delete)
 
 	// Start server
-	e.Logger.Fatal(e.Start(":1323"))
+	e.Logger.Fatal(e.Start(port))
 }
 
 // Model
@@ -50,23 +60,89 @@ type todo struct {
 	Done  bool          `json:"done" bson:"done"`
 }
 
-func create(c echo.Context) error {
+type handler struct {
+	m *mgo.Session
+}
+
+func (h *handler) create(c echo.Context) error {
+	session := h.m.Copy()
+	defer session.Close()
+
 	var t todo
 	if err := c.Bind(&t); err != nil {
 		return err
 	}
 
-	session, err := mgo.Dial("root:example@13.250.119.252")
-
-	if err != nil {
-		return err
-	}
-
+	t.ID = bson.NewObjectId()
 	res := session.DB("workshop").C("cl-todos")
-	if err2 := res.Insert(t); err != nil {
+	if err2 := res.Insert(t); err2 != nil {
 		return err2
 	}
+
 	return c.JSON(http.StatusOK, t)
+}
+
+// * pointer to handler
+func (h *handler) list(c echo.Context) error {
+	session := h.m.Copy()
+	defer session.Close()
+	var ts []todo //slide
+
+	res := session.DB("workshop").C("cl-todos")
+	if err2 := res.Find(nil).All(&ts); err2 != nil {
+		return err2
+	}
+
+	return c.JSON(http.StatusOK, ts)
+}
+
+func (h *handler) view(c echo.Context) error {
+	session := h.m.Copy()
+	defer session.Close()
+	id := bson.ObjectIdHex(c.Param("id"))
+
+	var t todo //slide
+	res := session.DB("workshop").C("cl-todos")
+	if err2 := res.FindId(id).One(&t); err2 != nil {
+		return err2
+	}
+
+	return c.JSON(http.StatusOK, t)
+}
+
+func (h *handler) update(c echo.Context) error {
+	session := h.m.Copy()
+	defer session.Close()
+	id := bson.ObjectIdHex(c.Param("id"))
+
+	var t todo //slide
+	res := session.DB("workshop").C("cl-todos")
+	if err2 := res.FindId(id).One(&t); err2 != nil {
+		return err2
+	}
+
+	t.Done = true
+
+	if err2 := res.UpdateId(id, &t); err2 != nil {
+		return err2
+	}
+
+	return c.JSON(http.StatusOK, t)
+}
+
+func (h *handler) delete(c echo.Context) error {
+	session := h.m.Copy()
+	defer session.Close()
+	id := bson.ObjectIdHex(c.Param("id"))
+
+	res := session.DB("workshop").C("cl-todos")
+	if err2 := res.RemoveId(id); err2 != nil {
+		return err2
+	}
+
+	return c.JSON(http.StatusOK, echo.Map{
+		"result": "success",
+	})
 }
 
 // 13.250.119.252
